@@ -1,0 +1,23 @@
+[
+  {
+    "name": "nginx",
+    "image": "nginx:latest",
+    "cpu": ${fargate_cpu},
+    "memory": ${fargate_memory},
+    "networkMode": "awsvpc",
+    "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "${ecs_service_name}-LogGroup",
+          "awslogs-region": "${region}",
+          "awslogs-stream-prefix": "${ecs_service_name}-LogGroup-stream"
+        }
+    },
+    "portMappings": [
+      {
+        "containerPort": ${app_port},
+        "hostPort": ${app_port}
+      }
+    ]
+  }
+]

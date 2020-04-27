@@ -14,8 +14,10 @@ ecs_domain_name = "irinarozalio.com"
 ecs_cluster_name = "Production-ECS-Cluster"
 eks_cluster_name = "Kubernetes"
 internet_cidr_blocks = "0.0.0.0/0"
-ecs_service_name = "FARGATE"
+#ecs_service_name = "FARGATE"
 
 # Helm chart
-memory = 1024
 helm_home = "/home/ubuntu/terraform_projects/ecs_fargate/infra_helm/.helm"
+
+# Application
+ecs_service_name = "nginx"

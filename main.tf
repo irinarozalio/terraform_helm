@@ -166,9 +166,11 @@ resource "aws_route" "public-internet-igw-route" {
   destination_cidr_block = "0.0.0.0/0"
 }
 
+
 resource "aws_ecs_cluster" "production-fargate-cluster" {
-  name = "Production-Fargate-Cluster"
+  name = "Production-ECS-Cluster"
 }
+
 
 resource "aws_security_group" "ecs_alb_security_group" {
   name        = "${var.ecs_cluster_name}-ALB-SG"
@@ -179,6 +181,13 @@ resource "aws_security_group" "ecs_alb_security_group" {
     from_port   = 443
     protocol    = "TCP"
     to_port     = 443
+    cidr_blocks = ["${var.internet_cidr_blocks}"]
+  }
+
+  ingress {
+    from_port   = 80
+    protocol    = "TCP"
+    to_port     = 80
     cidr_blocks = ["${var.internet_cidr_blocks}"]
   }
 
@@ -241,13 +250,11 @@ resource "aws_acm_certificate_validation" "ecs_domain_certificate_validation" {
 }
 
 
-resource "aws_alb_listener" "ecs_alb_https_listener" {
+resource "aws_alb_listener" "ecs_alb_http_listener" {
   load_balancer_arn = "${aws_alb.ecs_cluster_alb.arn}"
-  port              = 443
-  protocol          = "HTTPS"
-  ssl_policy        = "ELBSecurityPolicy-TLS-1-2-2017-01"
-  certificate_arn   = "${aws_acm_certificate.ecs_domain_certificate.arn}"
-
+  port              = "${var.app_port}"
+  protocol          = "HTTP"
+  
   "default_action" {
     type              = "forward"
     target_group_arn  = "${aws_alb_target_group.ecs_default_target_group.arn}"
@@ -257,10 +264,21 @@ resource "aws_alb_listener" "ecs_alb_https_listener" {
 }
 
 resource "aws_alb_target_group" "ecs_default_target_group" {
-  name      = "${var.ecs_cluster_name}-TG"
-  port      = 80
-  protocol  = "HTTP"
-  vpc_id    = "${aws_vpc.production-vpc.id}"
+  name        = "${var.ecs_cluster_name}-TG"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = "${aws_vpc.production-vpc.id}"
+  target_type = "ip"
+
+  health_check {
+    healthy_threshold   = "3"
+    interval            = "30"
+    protocol            = "HTTP"
+    matcher             = "200"
+    timeout             = "3"
+    path                = "${var.health_check_path}"
+    unhealthy_threshold = "2"
+  }
 
   tags {
     Name = "${var.ecs_cluster_name}-TG"
@@ -369,50 +387,6 @@ EOF
 }
 
 
-# resource "aws_security_group" "app_security_group" {
-#   name        = "${var.ecs_service_name}-SG"
-#   description = "Security group for springbootapp to communicate in and out"
-#   vpc_id      = "${aws_vpc.production-vpc.id}"
-
-#   ingress {
-#     from_port   = 8080
-#     protocol    = "TCP"
-#     to_port     = 8080
-#     cidr_blocks = ["${var.internet_cidr_blocks}"]
-#   }
-
-#   egress {
-#     from_port   = 0
-#     protocol    = "-1"
-#     to_port     = 0
-#     cidr_blocks = ["0.0.0.0/0"]
-#   }
-
-#   tags {
-#     Name  = "${var.ecs_service_name}-SG"
-#   }
-# }
-
-# resource "aws_ecs_service" "ecs_service" {
-#   name            = "${var.ecs_service_name}"
-#   task_definition = "${var.ecs_service_name}"
-#   desired_count   = "2"
-#   cluster         = "Production-ECS-Cluster"
-#   launch_type     = "FARGATE"
-
-#   network_configuration {
-#     subnets           = ["${list(aws_subnet.public-subnet-1.id, aws_subnet.public-subnet-2.id, aws_subnet.public-subnet-3.id)}"]
-#     security_groups   = ["${aws_security_group.ecs_alb_security_group.id}"]
-#     assign_public_ip  = true
-#   }
-
-#   # load_balancer {
-#   #   container_name    = "${var.ecs_service_name}"
-#   #   container_port    = "${var.docker_container_port}"
-#   #   target_group_arn  = "${aws_alb_target_group.ecs_app_target_group.arn}"
-#   # }
-# }
-
 resource "aws_eks_cluster" "Ira_Kub" {
   name     = "Kubernetes"
   role_arn = "${aws_iam_role.example.arn}"
@@ -461,6 +435,125 @@ resource "aws_iam_role_policy_attachment" "example-AmazonEKSServicePolicy" {
 }
 
 
+resource "aws_security_group" "app_security_group" {
+  name        = "${var.ecs_service_name}-SG"
+  description = "Security group for springbootapp to communicate in and out"
+  vpc_id      = "${aws_vpc.production-vpc.id}"
+
+  ingress {
+    from_port   = 8080
+    protocol    = "TCP"
+    to_port     = 8080
+    cidr_blocks = ["${var.internet_cidr_blocks}"]
+  }
+
+  egress {
+    from_port   = 0
+    protocol    = "-1"
+    to_port     = 0
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags {
+    Name  = "${var.ecs_service_name}-SG"
+  }
+}
+
+data "template_file" "myapp" {
+  template = "${file("./task_definition.json")}"
+  vars {
+    task_definition_name  = "${var.ecs_service_name}"
+    ecs_service_name      = "${var.ecs_service_name}"
+    app_image             = "${var.app_image}"
+    app_port              = "${var.app_port}"
+    fargate_cpu           = "${var.fargate_cpu}"
+    fargate_memory        = "${var.fargate_memory}"
+    region                = "${var.region}"
+  }
+}
+
+resource "aws_ecs_task_definition" "app" {
+  family                   = "${var.ecs_service_name}"
+  execution_role_arn       = "${aws_iam_role.ecs_task_execution_role.arn}"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "${var.fargate_cpu}"
+  memory                   = "${var.fargate_memory}"
+  container_definitions    = "${data.template_file.myapp.rendered}"
+}
+
+
+# data "aws_iam_policy_document" "ecs_task_execution_role" {
+#   assume_role_policy = <<POLICY
+# {
+#   "Version": "2012-10-17",
+#   "Statement": [
+#     {
+#       "Effect": "Allow",
+#       "Principal": {
+#         "Service": "ecs-tasks.amazonaws.com"
+#       },
+#       "Action": "sts:AssumeRole"
+#     }
+#   ]
+# }
+# POLICY
+# }
+
+
+data "aws_iam_policy_document" "ecs_task_execution_role" {
+  version = "2012-10-17"
+  statement {
+    sid = ""
+    effect = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+
+# ECS task execution role
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name               = "${var.ecs_task_execution_role_name}"
+  assume_role_policy = "${data.aws_iam_policy_document.ecs_task_execution_role.json}"
+}
+
+# ECS task execution role policy attachment
+resource "aws_iam_role_policy_attachment" "ecs_task_execution_role" {
+  role       = "${aws_iam_role.ecs_task_execution_role.name}"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+
+
+
+resource "aws_ecs_service" "main" {
+  name            = "${var.ecs_service_name}"
+  cluster         = "${var.ecs_cluster_name}"
+  task_definition = "${var.ecs_service_name}"
+  desired_count   = "${var.app_count}"
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    security_groups  = ["${aws_security_group.ecs_alb_security_group.id}"]
+    subnets          = ["${list(aws_subnet.private-subnet-1.id, aws_subnet.private-subnet-2.id, aws_subnet.private-subnet-3.id)}"]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = "${aws_alb_target_group.ecs_default_target_group.arn}"
+    container_name   = "${var.ecs_service_name}"
+    container_port   = "${var.app_port}"
+  }
+
+  depends_on = ["aws_alb_listener.ecs_alb_http_listener", "aws_iam_role_policy_attachment.ecs_task_execution_role"]
+}
+
+
 # resource "aws_eks_fargate_profile" "eks_fargate_profile" {
 #   cluster_name           = "${var.eks_cluster_name}" 
 #   fargate_profile_name   = "eksfargate"
@@ -501,6 +594,7 @@ resource "kubernetes_service_account" "tiller_sa" {
     name      = "tiller"
     namespace = "kube-system"
   }
+  depends_on = ["aws_eks_node_group.example"]
 }
 
 # resource "kubernetes_cluster_role_binding" "tiller_sa_cluster_admin_rb" {
@@ -554,7 +648,7 @@ resource "kubernetes_cluster_role_binding" "tiller" {
     kind  = "ClusterRole"
     name = "cluster-admin"
   }
-  #depends_on = ["aws_eks_cluster.Ira_Kub"]
+  depends_on = ["aws_eks_node_group.example"]
 }
 
 
@@ -570,7 +664,7 @@ resource "null_resource" "kubectl_init" {
   provisioner "local-exec" {
     command = "aws eks --region us-east-1 update-kubeconfig --name Kubernetes"
   }
-  depends_on = ["aws_eks_cluster.Ira_Kub"]
+  depends_on = ["aws_eks_node_group.example"]
 }
 
 
@@ -667,3 +761,17 @@ resource "aws_iam_role_policy_attachment" "example-AmazonEC2ContainerRegistryRea
   role       = "${aws_iam_role.eks-node-group.name}"
 }
 
+# Set up CloudWatch group and log stream and retain logs for 30 days
+resource "aws_cloudwatch_log_group" "myapp_log_group" {
+  name              = "${var.ecs_service_name}-LogGroup"
+  retention_in_days = 30
+
+  tags = {
+    Name = "cb-log-group"
+  }
+}
+
+resource "aws_cloudwatch_log_stream" "myapp_log_stream" {
+ name           = "my-log-stream"
+ log_group_name = "${aws_cloudwatch_log_group.myapp_log_group.name}"
+}
